@@ -2,7 +2,9 @@ const express = require("express");
 const { MongoClient } = require("mongodb");
 require("dotenv").config();
 
+const cors = require("cors");
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
@@ -61,6 +63,304 @@ function validateSosDto(body) {
   }
   return errors;
 }
+
+/**
+ * GET /api/sos
+ * Retrieve SOS messages with optional filtering and pagination
+ */
+app.get("/api/sos", async (req, res) => {
+  try {
+    const collection = await getCollection();
+    const { category, status, search, limit = 50, skip = 0 } = req.query;
+
+    const filter = {};
+    if (category && category !== "ALL") {
+      filter.emergencyCategory = category.toUpperCase();
+    }
+    if (status && status !== "ALL") {
+      filter.deliveryStatus = status.toUpperCase();
+    }
+    if (search) {
+      filter.$or = [
+        { id: { $regex: search, $options: "i" } },
+        { senderDeviceId: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+        { emergencyCategory: { $regex: search, $options: "i" } },
+        { assistanceTypes: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const totalCount = await collection.countDocuments(filter);
+    const messages = await collection
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(Number(skip))
+      .limit(Number(limit))
+      .toArray();
+
+    return res.status(200).json({
+      success: true,
+      count: messages.length,
+      total: totalCount,
+      data: messages,
+    });
+  } catch (error) {
+    console.error("[Backend] Error querying SOS messages:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "Error querying SOS messages from database: " + error.message,
+    });
+  }
+});
+
+/**
+ * GET /api/sos/stats
+ * Aggregate metrics and statistics for dashboard overview
+ */
+app.get("/api/sos/stats", async (req, res) => {
+  try {
+    const collection = await getCollection();
+    const total = await collection.countDocuments();
+    const categoryCounts = await collection
+      .aggregate([
+        { $group: { _id: "$emergencyCategory", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ])
+      .toArray();
+
+    const statusCounts = await collection
+      .aggregate([
+        { $group: { _id: "$deliveryStatus", count: { $sum: 1 } } },
+      ])
+      .toArray();
+
+    const activeCount = await collection.countDocuments({
+      deliveryStatus: { $in: ["QUEUED", "DELIVERED", "IN_PROGRESS", "ACTIVE"] },
+    });
+
+    const resolvedCount = await collection.countDocuments({
+      deliveryStatus: "RESOLVED",
+    });
+
+    const latest = await collection.find().sort({ createdAt: -1 }).limit(1).toArray();
+
+    return res.status(200).json({
+      success: true,
+      stats: {
+        total,
+        active: activeCount,
+        resolved: resolvedCount,
+        categories: categoryCounts.reduce((acc, c) => ({ ...acc, [c._id]: c.count }), {}),
+        statuses: statusCounts.reduce((acc, s) => ({ ...acc, [s._id]: s.count }), {}),
+        latestIncidentTime: latest.length ? latest[0].createdAt : null,
+      },
+    });
+  } catch (error) {
+    console.error("[Backend] Error calculating stats:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "Error calculating SOS stats: " + error.message,
+    });
+  }
+});
+
+/**
+ * GET /api/sos/:id
+ * Retrieve a specific SOS message by ID
+ */
+app.get("/api/sos/:id", async (req, res) => {
+  try {
+    const collection = await getCollection();
+    const sos = await collection.findOne({ id: req.params.id });
+    if (!sos) {
+      return res.status(404).json({ success: false, error: "SOS message not found" });
+    }
+    return res.status(200).json({ success: true, data: sos });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/sos/:id/status
+ * Update the delivery or response status of an SOS message
+ */
+app.patch("/api/sos/:id/status", async (req, res) => {
+  try {
+    const { status, responderNotes } = req.body;
+    if (!status) {
+      return res.status(400).json({ success: false, error: "Status field is required" });
+    }
+
+    const collection = await getCollection();
+    const updateDoc = {
+      $set: {
+        deliveryStatus: status.toUpperCase(),
+        lastUpdatedAt: Date.now(),
+      },
+    };
+    if (responderNotes !== undefined) {
+      updateDoc.$set.responderNotes = responderNotes;
+    }
+
+    const result = await collection.updateOne({ id: req.params.id }, updateDoc);
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, error: "SOS message not found" });
+    }
+
+    const updated = await collection.findOne({ id: req.params.id });
+    return res.status(200).json({ success: true, data: updated });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/sos/seed
+ * Seed realistic disaster SOS sample documents if database is empty or for demo testing
+ */
+app.post("/api/sos/seed", async (req, res) => {
+  try {
+    const collection = await getCollection();
+    const sampleAlerts = [
+      {
+        id: "sos-2026-med-0914",
+        messageType: "SOS",
+        senderDeviceId: "dev-mesh-relay-alpha",
+        emergencyCategory: "MEDICAL",
+        description: "Elderly resident trapped on 2nd floor with cardiac emergency and severe shortness of breath. Power cut, oxygen tank depleting.",
+        assistanceTypes: ["FIRST_AID", "OXYGEN_SUPPORT", "EVACUATION"],
+        latitude: 13.0827,
+        longitude: 80.2707,
+        locationAccuracyMeters: 4.2,
+        locationTimestamp: Date.now() - 1000 * 60 * 18,
+        createdAt: Date.now() - 1000 * 60 * 20,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 2,
+        maxHopCount: 5,
+        deliveryStatus: "QUEUED",
+        direction: "OUTGOING",
+        incidentId: "INC-CHN-2026-081",
+        serverReceivedAt: Date.now() - 1000 * 60 * 18,
+      },
+      {
+        id: "sos-2026-fld-1042",
+        messageType: "SOS",
+        senderDeviceId: "dev-lora-node-049",
+        emergencyCategory: "FLOOD",
+        description: "Water level rose 1.8m in low-lying residential block. Family of 4 stranded on roof terrace with no drinking water.",
+        assistanceTypes: ["BOAT_RESCUE", "DRINKING_WATER", "FOOD_RATIONS"],
+        latitude: 13.0359,
+        longitude: 80.2158,
+        locationAccuracyMeters: 6.8,
+        locationTimestamp: Date.now() - 1000 * 60 * 45,
+        createdAt: Date.now() - 1000 * 60 * 50,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 3,
+        maxHopCount: 5,
+        deliveryStatus: "IN_PROGRESS",
+        direction: "OUTGOING",
+        incidentId: "INC-CHN-2026-079",
+        serverReceivedAt: Date.now() - 1000 * 60 * 42,
+      },
+      {
+        id: "sos-2026-fir-0319",
+        messageType: "SOS",
+        senderDeviceId: "dev-ble-gateway-11",
+        emergencyCategory: "FIRE",
+        description: "Transformer explosion caused blaze spreading rapidly across timber storage yard. Thick smoke engulfing adjacent clinic.",
+        assistanceTypes: ["FIRE_EXTINGUISH", "SMOKE_MASKS", "EVACUATION"],
+        latitude: 12.9716,
+        longitude: 77.5946,
+        locationAccuracyMeters: 3.1,
+        locationTimestamp: Date.now() - 1000 * 60 * 95,
+        createdAt: Date.now() - 1000 * 60 * 100,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 1,
+        maxHopCount: 5,
+        deliveryStatus: "DELIVERED",
+        direction: "OUTGOING",
+        incidentId: "INC-BLR-2026-012",
+        serverReceivedAt: Date.now() - 1000 * 60 * 95,
+      },
+      {
+        id: "sos-2026-res-7721",
+        messageType: "SOS",
+        senderDeviceId: "dev-phone-mesh-882",
+        emergencyCategory: "SEARCH_RESCUE",
+        description: "Two hikers lost off-trail following flash landslide. Cell towers down. One person has fractured ankle.",
+        assistanceTypes: ["STRETCHER", "FIRST_AID", "SEARCH_TEAM"],
+        latitude: 11.4102,
+        longitude: 76.6950,
+        locationAccuracyMeters: 8.5,
+        locationTimestamp: Date.now() - 1000 * 60 * 180,
+        createdAt: Date.now() - 1000 * 60 * 190,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 4,
+        maxHopCount: 5,
+        deliveryStatus: "QUEUED",
+        direction: "OUTGOING",
+        incidentId: "INC-OOT-2026-004",
+        serverReceivedAt: Date.now() - 1000 * 60 * 180,
+      },
+      {
+        id: "sos-2026-eqk-5012",
+        messageType: "SOS",
+        senderDeviceId: "dev-lora-relay-02",
+        emergencyCategory: "EARTHQUAKE",
+        description: "Structural collapse of old community center wing. 3 persons accounted for, 2 suspected under rubble. Voice taps heard.",
+        assistanceTypes: ["HEAVY_LIFT", "ACOUSTIC_LOCATOR", "PARAMEDIC"],
+        latitude: 15.3173,
+        longitude: 75.7139,
+        locationAccuracyMeters: 5.0,
+        locationTimestamp: Date.now() - 1000 * 60 * 300,
+        createdAt: Date.now() - 1000 * 60 * 310,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 2,
+        maxHopCount: 5,
+        deliveryStatus: "RESOLVED",
+        direction: "OUTGOING",
+        incidentId: "INC-KA-2026-041",
+        serverReceivedAt: Date.now() - 1000 * 60 * 300,
+        responderNotes: "All 5 persons retrieved successfully by NDRF unit. Shifted to civil hospital.",
+      },
+      {
+        id: "sos-2026-fod-3389",
+        messageType: "SOS",
+        senderDeviceId: "dev-mesh-relay-beta",
+        emergencyCategory: "FOOD_WATER",
+        description: "Isolated shelter housing 35 displaced flood victims running out of baby formula and potable water. Bridge road severed.",
+        assistanceTypes: ["DRINKING_WATER", "INFANT_FOOD", "HYGIENE_KITS"],
+        latitude: 13.1235,
+        longitude: 80.1982,
+        locationAccuracyMeters: 10.0,
+        locationTimestamp: Date.now() - 1000 * 60 * 420,
+        createdAt: Date.now() - 1000 * 60 * 430,
+        expiresAt: Date.now() + 86400000,
+        hopCount: 3,
+        maxHopCount: 5,
+        deliveryStatus: "DELIVERED",
+        direction: "OUTGOING",
+        incidentId: "INC-CHN-2026-065",
+        serverReceivedAt: Date.now() - 1000 * 60 * 420,
+      }
+    ];
+
+    let inserted = 0;
+    for (const doc of sampleAlerts) {
+      const resUpsert = await collection.updateOne({ id: doc.id }, { $set: doc }, { upsert: true });
+      if (resUpsert.upsertedCount > 0 || resUpsert.modifiedCount > 0) inserted++;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully seeded ${sampleAlerts.length} realistic SOS alerts`,
+      count: sampleAlerts.length,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 /**
  * POST /api/sos
