@@ -44,7 +44,45 @@ By default, the server listens on `http://localhost:3000`.
 
 ---
 
-## 4. API Endpoints
+## 4. Project Architecture (MVC)
+
+The backend follows an industry-standard Model-View-Controller (MVC) architecture:
+
+```
+CriSoS-backend/
+├── src/
+│   ├── config/              # Configuration & Database connection
+│   │   ├── db.js            # MongoDB Atlas connection manager & collection accessors
+│   │   └── env.js           # Centralized environment variables
+│   ├── controllers/         # Controller logic (handles requests/responses)
+│   │   ├── authController.js   # User registration, login, logout, session check
+│   │   ├── healthController.js # Health status & MongoDB ping
+│   │   └── sosController.js    # SOS alert CRUD, volunteer toggling, stats, seeding
+│   ├── data/                # Static & seed datasets
+│   │   └── sampleAlerts.js  # Realistic demo alerts for disaster scenarios
+│   ├── middlewares/         # Express middlewares
+│   │   └── errorHandler.js  # Global error handling and 404 responses
+│   ├── models/              # Model layer (Database operations & collections)
+│   │   ├── sosModel.js      # SOS message persistence, filtering, aggregations
+│   │   └── userModel.js     # User registration & lookup in MongoDB
+│   ├── routes/              # Express route declarations
+│   │   ├── authRoutes.js    # /api/auth routes
+│   │   ├── healthRoutes.js  # /api/health route
+│   │   ├── sosRoutes.js     # /api/sos routes
+│   │   └── index.js         # Unified router mounting all sub-routes under /api
+│   ├── utils/               # Shared utilities
+│   │   └── validators.js    # Validation logic (e.g. validateSosDto)
+│   └── app.js               # Express app initialization (CORS, JSON, cookies, routes)
+├── test/
+│   ├── routes.test.js       # Integration tests for API routes
+│   └── server.test.js       # Unit tests for payload validation
+├── server.js                # Server entry point & backwards-compatible re-exports
+└── package.json
+```
+
+---
+
+## 5. API Endpoints
 
 ### `POST /api/sos`
 Stores or updates an SOS alert in MongoDB Atlas.
