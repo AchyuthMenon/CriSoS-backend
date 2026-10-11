@@ -94,3 +94,28 @@ Health check endpoint reporting API and database connection status:
   "timestamp": "2026-10-10T21:15:00.000Z"
 }
 ```
+
+### `GET /api/sos`
+Retrieves stored SOS emergency signals from MongoDB Atlas with optional filtering and pagination:
+* **Query Parameters**:
+  * `category`: Filter by emergency category (e.g. `FLOOD`, `FIRE`, `MEDICAL`, `TRAPPED`, or `ALL`)
+  * `status`: Filter by delivery status (e.g. `QUEUED`, `SENT`, `RESOLVED`, or `ALL`)
+  * `search`: Text search across UUID, senderDeviceId, category, description, and assistance tags
+  * `limit`: Maximum records to return (default: `50`, max: `250`)
+  * `skip`: Number of records to skip for pagination
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "count": 46,
+    "total": 46,
+    "data": [ /* Array of SOS document objects */ ]
+  }
+  ```
+
+### `GET /api/sos/stats`
+Returns aggregated telemetry statistics and category breakdowns for overview cards.
+
+### `PATCH /api/sos/:id/status`
+Updates delivery status (e.g. `RESOLVED`, `IN_PROGRESS`) and appends responder notes to an emergency signal.
+
